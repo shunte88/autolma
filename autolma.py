@@ -7,6 +7,7 @@ from pathlib import Path
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 import time
+from argparse import ArgumentParser
 
 sys.path.append(str(Path(__file__).resolve().parent / 'src'))
 
@@ -20,7 +21,16 @@ ppo = os.getenv("NTFLR_PREMIUM")
 chrome_options = chrome_browser_options()
 driver = init_browser(chrome_options)
 
-_url = 'https://losslessma.net/category/reggae-ska/'
+parser = ArgumentParser()
+parser.add_argument('--source', '-s',
+                    help='source url',
+                    type=str,
+                    default=None)
+parser.add_argument('--filter', '-f',
+                    help='filter',
+                    type=str,
+                    default=None)
+args = parser.parse_args()
 
 
 def get_nitroflare_links(url):
@@ -102,31 +112,39 @@ def load_page(url):
 
     return download_links
 
-def get_download_links(url):
+def get_download_links(url, filter=None):
 
     driver.get(url)
     time.sleep(2)  # Wait for the page to load
-
+    continue_urls = []
+    
     # Find all 'Continue reading' links
     continue_links = driver.find_elements(By.CLASS_NAME, 'more-link')
-    continue_urls = [link.get_attribute('href') for link in continue_links]
+    if filter:
+        for link in continue_links:
+            _ref = link.get_attribute('href')
+            if filter.lower() in _ref.lower():
+                continue_urls.append(_ref)
+    else:
+        continue_urls = [link.get_attribute('href') for link in continue_links]
 
     return continue_urls
 
 
-follow = []
-links = get_download_links(_url)
+if args.source:
+    follow = []
+    links = get_download_links(args.source, args.filter)
 
-# Print all collected download links
-for link in links:
-    follow.append(load_page(link))
+    # Print all collected download links
+    for link in links:
+        follow.append(load_page(link))
 
-# really need to add the links to a download stream
-# the download stream would own all downloads and
-# monitor and meter bandwidth
-print('go nit-ro')
-for link in follow:
-    download_files(link, upo, ppo, folder='/media/stuart/one/pre/')
+    # really need to add the links to a download stream
+    # the download stream would own all downloads and
+    # monitor and meter bandwidth
+    print('go-go-nite-ro')
+    for link in follow:
+        download_files(link, upo, ppo, folder='/media/stuart/one/pre/')
 
 # Close the browser
 driver.quit()
