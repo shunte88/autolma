@@ -14,12 +14,19 @@ parser.add_argument('--source', '-s',
                     help='source url',
                     type=str,
                     default=None)
+parser.add_argument('--norule','-n',
+                    help='Ignore standard Hi-Res rules',
+                    type=int,
+                    default=0,
+                    const=0,
+                    nargs='?',
+                    choices=[0, 1])
 parser.add_argument('--filter', '-f',
                     help='filter',
                     type=str,
                     default=None)
 args = parser.parse_args()
-
+print(args)
 upo = os.getenv('NTFLR_USERNAME')
 if not upo:
     print('NTFLR_USERNAME not set')
@@ -34,6 +41,7 @@ sdx = LMADownloader(
     pxs=os.getenv('NTFLR_PREMIUM'),
     source=args.source,
     filter=args.filter,
+    apply_rule=(0==args.norule),
     logging_verbose=True)
 
 
@@ -45,5 +53,6 @@ for link in links:
 
 # Close the browser and cleanup
 sdx.close()
+# Download and rebuild seen files
 sdx.download_files(follow)
 sdx.rebuild_seen_files()

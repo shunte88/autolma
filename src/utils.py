@@ -11,19 +11,22 @@ from selenium import webdriver
 from selenium.webdriver.chrome.service import Service as ChromeService
 from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support import expected_conditions as EC
 
 import asyncio
 import aiohttp
 
 class LMADownloader:
 
+    BITDEPTH_24 = '_24-'
+    BITDEPTH_16 = '_16-'
     NTFURL_API = "https://nitroflare.com/api/v2"
     NTFURL_KEYINFO = f"{NTFURL_API}/getKeyInfo"
     NTFURL_FILEINFO = f"{NTFURL_API}/getFileInfo"
     NTFURL_DOWNLOADLINK = f"{NTFURL_API}/getDownloadLink"
     NTFURL_FOLDER_INGEST = "http://nitroflare.com/ajax/folder.php"  # A WHA.. WHA...
-    skip = ['DSD', 'DSF', 'ISO', '_16-']
+    skip = ['DSD', 'DSF', 'ISO', BITDEPTH_16]
+    NTF_ONLINE='online'
+    NTF_OFFLINE='offline'
 
     def __init__(self, **kwargs):
         self.folder_regex = r"folder/(?P<USER>\d+)/(?P<ID>[\w=]+)"
@@ -37,6 +40,7 @@ class LMADownloader:
         sys.path.append(self.profile_dir)
         self.seen_file = os.path.join(os.getcwd(),'.cache','seen_files')
         self.log_dir = os.path.join(os.getcwd(), "logs")
+        self.apply_rule = kwargs.get('apply_rule', True)
         self.download_dir = kwargs.get('download_dir', None)
         self.uxs = kwargs.get('uxs', None)
         self.pxs = kwargs.get('pxs', None)
@@ -59,6 +63,14 @@ class LMADownloader:
                 self.driver = None
             except:
                 pass
+
+    def display_settings(self):
+        logging.info(f'Nitroflare user name .........: {self.uxs}')
+        logging.info(f'LMA Source URI ...............: {self.source}')
+        if self.filter:
+            logging.info(f'LMA Filter Applied ...........: {self.filter}')
+        logging.info(f'Standard 24 bit rules apply ..: {self.apply_rule}')
+        logging.info(f'Download (Staging) Folder ....: {self.download_dir}')
 
     def setup_request_session(self):
         # Create a Requests session
@@ -100,7 +112,7 @@ class LMADownloader:
 
     def add_seen_show(self, data):
         test = data.upper()
-        if not(test in self.seen_files):
+        if test not in self.seen_files:
             self.seen_files.append(test)
             if not self.modified_seen_shows:
                 self.modified_seen_shows = True
@@ -142,7 +154,18 @@ class LMADownloader:
 
     async def go_download(self, auri):
         tasks = [self.download_file(url, name, title) for url, name, title in auri]
-        await asyncio.gather(*tasks)
+        #####await asyncio.gather(*tasks)
+        # handle a timeout
+        try:
+            for task in asyncio.as_completed(tasks, timeout=300):
+                await task
+        except asyncio.TimeoutError:
+            # log timeout
+            logging.error('Task time out')
+        except asyncio.CancelledError:
+            logging.warning('Task cabnelled')
+        except Exception as e:
+            logging.error(f'Exception on task manager: {e}')
 
     def ensure_seen_file(self):
         _dir = os.path.dirname(self.seen_file)
@@ -163,7 +186,7 @@ class LMADownloader:
         return self.seen_files
 
     def ensure_chrome_profile(self):
-        profile_dir = os.path.dirname(self.chromeProfilePath)
+        self.profile_dir = os.path.dirname(self.chromeProfilePath)
         if not os.path.exists(self.profile_dir):
             os.makedirs(self.profile_dir)
         if not os.path.exists(self.chromeProfilePath):
@@ -187,7 +210,7 @@ class LMADownloader:
         options.add_argument("--disable-popup-blocking")
         options.add_argument("--no-first-run")
         options.add_argument("--no-default-browser-check")
-        ##options.add_argument("--disable-logging")
+        options.add_argument("--disable-logging")
         options.add_argument("--disable-autofill")
         options.add_argument("--disable-plugins")
         options.add_argument("--disable-animations")
@@ -223,28 +246,30 @@ class LMADownloader:
 
     def download_files(self, files):
 
+        self.display_settings()
         logging.info(f'Found {len(files)} NF links')
 
         def prep_nitroflare(_file_id):
             params = {"files": _file_id}
-            if not(_file_id.upper() in self.seen_files):
+            if _file_id.upper() not in self.seen_files:
                 response = requests.get(url=self.NTFURL_FILEINFO, params=params)
                 if response.status_code == 200:
-                    j = response.json()
-                    params = self.nf_premium() 
-                    params['file'] = _file_id
-                    response = requests.get(url=self.NTFURL_DOWNLOADLINK, params=params)
-                    if response.status_code == 200:
-                        j = response.json()
-                        test = j["result"]["name"]
-                        if not 'scan' in test.lower():
-                            auri.append((
-                                j["result"]["url"],
-                                os.path.join(self.download_dir, test),
-                                _file_id,
-                            ))
-            else:
-                logging.warning(f'We have seen {_file_id}')
+                    j = response.json()['result']
+                    if j['files'][_file_id]['status']==self.NTF_ONLINE:
+                        params = self.nf_premium() 
+                        params['file'] = _file_id
+                        response = requests.get(url=self.NTFURL_DOWNLOADLINK, params=params)
+                        if response.status_code == 200:
+                            j = response.json()['result']
+                            test = j['name']
+                            if 'scan' not in test.lower():
+                                auri.append((
+                                    j['url'],
+                                    os.path.join(self.download_dir, test),
+                                    _file_id,
+                                ))
+                    else:
+                        logging.warning(f'File {_file_id} is inactive or deleted')
 
         path = Path(self.download_dir)
         path.mkdir(parents=True, exist_ok=True)
@@ -252,11 +277,18 @@ class LMADownloader:
         auri = []
         response = requests.get(url=self.NTFURL_KEYINFO, params=self.nf_premium())
         if response.status_code == 200:
-            j = response.json()
-            logging.info(' '.join(['user is', j['result']['status'], 
-                'remaining:', str(j['result']['trafficLeft']/1024/1024/1024),
-                'GiB']))
-            
+            j = response.json()['result']
+            remaining_bandwidth = f'{(100*(j['trafficLeft']/j['trafficMax'])):.2f}'
+            logging.info(' '.join([
+                'user',
+                self.uxs, 
+                'is', 
+                j['status'], 
+                'with', remaining_bandwidth+'%',
+                'bandwidth remaining']))
+            if float(remaining_bandwidth) < 25.00:  # arbitary bounce
+                logging.warning('Bandwidth is low, terminating')
+                sys.exit(2)
             for uri in files:
                 if isinstance(uri, list):
                     uri = uri[0]
@@ -283,11 +315,13 @@ class LMADownloader:
                                 total = j['total']
                                 for link in j['files']:
                                     found += 1
-                                    if not '_24' in link['name']:
-                                        continue
-                                    match = re.search(self.file_id_regex, link['url'])
-                                    if match:
-                                        prep_nitroflare(match.group(1))
+                                    # how to check if the file is available - and not deleted or inactivated
+                                    if  (self.BITDEPTH_24 in link['name'] or \
+                                        'Hi-Res' in link['name'] or \
+                                        not self.apply_rule):
+                                        match = re.search(self.file_id_regex, link['url'])
+                                        if match:
+                                            prep_nitroflare(match.group(1))
                             page += 1
 
         if auri:
